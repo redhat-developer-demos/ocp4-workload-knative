@@ -1,0 +1,16 @@
+---
+become_override: False
+ocp_username: opentlc-mgr
+silent: False
+
+knative_components:
+    knative_serving:
+      version:  v0.4.1
+      catalog_src:  https://raw.githubusercontent.com/openshift/knative-serving/release- v0.4.1/openshift/olm/knative-serving.catalogsource.yaml
+    knative_build:
+      version:  v0.4.0
+      catalog_src: https://raw.githubusercontent.com/openshift/knative-build/release- v0.4.0/openshift/olm/knative-build.catalogsource.yaml
+    knative_eventing:
+      version:  v0.4.1
+      catalog_src:  https://raw.githubusercontent.com/openshift/knative-eventing/release- v0.4.1/openshift/olm/knative-eventing.catalogsource.yaml
+      

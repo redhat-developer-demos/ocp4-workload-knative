@@ -1,0 +1,149 @@
+# vim: set ft=ansible
+---
+
+# TODO revisit this logic
+- name: Find OLM Operator Pods
+  k8s_facts:
+    kind: Pod
+    field_selectors:
+      - metadata.name =  olm-operator
+  register: olm_pods
+
+- name : Set OLM Namespace
+  set_fact:
+    olm_ns: "{{olm_pods.resources[0].metadata.namespace}}|unique"
+     
+- name: Install Catalog Sources
+  command: |
+     "oc  apply -n {{olm_ns}} -f {{item.value.catalog_src}} "
+  loop: "{{ knative_components|dict2items }}"
+
+- name: Wait for  Knative Operator Pods to 
+  command: |
+    "oc wait --namespace ={{olm_ns}} --for=condition=Ready pods  --timeout=300s"
+  register: knative_olm_op_pods
+
+- name: Create Knative Component Namespaces
+  k8s:
+    state: present
+    definition:
+      apiVersion: project.openshift.io/v1
+      kind: Project
+      metadata:
+        name: "{{ item.key }}"
+  loop: "{{ knative_components|dict2items }}"
+  ignore_errors: True
+
+- name: Install Knative Components
+  k8s:
+    state: present
+    definition:
+       apiVersion: operators.coreos.com/v1
+       kind: OperatorGroup
+       metadata:
+         name: "{{item.key}}"
+         namespace: "{{item.key}}"
+  loop: "{{ knative_components|dict2items }}"
+
+- name: Subscribe to  Knative Components
+  k8s:
+    state: present
+    definition:
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: "{{ item.key}}-subscription"
+          generateName: "{{item.key}}-"
+          namespace: "{{item.key}"
+        spec:
+          source: "{{ item.key}}"
+          sourceNamespace: "{{olm_ns}}"
+          name:  "{{ item.key}}"
+          startingCSV:  "{{ item.key}}.{{item.value.version}}"
+          channel: alpha
+  loop: "{{ knative_components|dict2items }}"
+
+## Check status 
+- name: Check Knative Build Status
+  command: |
+     oc rollout status deployment -n knative-build build-controller
+  retries: 30
+  delay: 10
+
+- name: Wait for  Knative Build Pods to be Ready
+  command: |
+    "oc wait --namespace=knative-build --for=condition=Ready pods  --timeout=300s"
+  register: knative_build_pods
+
+- name: Check Knative Serving Status
+  command:
+     oc rollout status deployment -n knative-serving controller
+  retries: 30
+  delay: 10
+
+- name: Wait for  Knative Serving Pods to be Ready
+  command: |
+    "oc wait --namespace=knative-serving --for=condition=Ready pods  --timeout=300s"
+  register: knative_serving_pods
+
+- name: Check Knative Eventing Status
+  command:
+     oc rollout status deployment -n knative-eventing eventing-controller
+  retries: 30
+  delay: 10
+
+- name: Wait for  Knative Eventing Pods to be Ready
+  command: |
+    "oc wait --namespace=knative-eventing --for=condition=Ready pods  --timeout=300s"
+  register: knative_eventing_pods
+
+- name: Create config-service-ca ConfigMap
+  k8s:
+    state: present
+    definition:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+           name: config-service-ca
+           namespace: knative-serving
+           annotations:
+              service.alpha.openshift.io/inject-cabundle="true"
+        data: {}
+
+- name: Create config-service-ca ConfigMap
+  command: |
+      oc -n knative-serving get cm config-service-ca | grep 'service-ca.crt'
+  retries: 18
+  delay: 10
+
+- name: Enable Interaction with Registry
+  command: |
+      oc -n knative-serving set volume deployment/controller --add --name=service-ca \
+         --configmap-name=config-service-ca \
+         --mount-path=/var/run/secrets/kubernetes.io/servicecerts && \
+      oc -n knative-serving  set env deployment/controller SSL_CERT_FILE=/var/run/secrets/kubernetes.io/servicecerts/service-ca.crt
+  register: enable_interaction_with_registry  
+
+- name: Show Enable Interaction with Registry Status
+  debug: 
+     msg: "{{enable_interaction_with_registry.stdout}}"
+
+- name: Skip Tag Resolving for internal Registry
+  command: |
+      oc -n knative-serving -n knative-serving get cm config-controller -oyaml \
+        | sed "s/\(^ *registriesSkippingTagResolving.*$\)/\1,docker-registry.default.svc:5000,image-registry.openshift-image-registry.svc:5000/"  \
+        | oc apply -f -
+  register: skip_tag_resolving
+  ignore_errors: True
+
+- name: Installing Knative OpenShift Ingress Operator
+  command: |
+    oc apply --filename https://github.com/bbrowning/knative-openshift-ingress/releases/download/v0.0.1/release.yaml
+  ignore_errors: True
+
+# Leave this as the last task in the playbook.
+- name: workload tasks complete
+  debug:
+    msg: "Workload Tasks completed successfully."
+  when: not silent|bool
+

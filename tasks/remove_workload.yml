@@ -1,0 +1,69 @@
+# vim: set ft=ansible
+---
+
+- name: Remove Knative OpenShift Ingress Operator
+  command: |
+    oc delete --filename https://github.com/bbrowning/knative-openshift-ingress/releases/download/v0.0.1/release.yaml
+  ignore_errors: True
+
+- name: Remove Knative Components
+  k8s:
+    state: absent
+    definition:
+       apiVersion: operators.coreos.com/v1
+       kind: OperatorGroup
+       metadata:
+         name: "{{item.key}}"
+         namespace: "{{item.key}}"
+  loop: "{{ knative_components|dict2items }}"
+
+- name: UnSubscribe to  Knative Components
+  k8s:
+    state: absent
+    definition:
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: "{{ item.key}}-subscription"
+          generateName: "{{item.key}}-"
+          namespace: "{{item.key}"
+        spec:
+          source: "{{ item.key}}"
+          sourceNamespace: "{{olm_ns}}"
+          name:  "{{ item.key}}"
+          startingCSV:  "{{ item.key}}.{{item.value.version}}"
+          channel: alpha
+  loop: "{{ knative_components|dict2items }}"
+
+- name: Remove Knative Component Namespaces
+  k8s:
+    state: absent
+    definition:
+      apiVersion: project.openshift.io/v1
+      kind: Project
+      metadata:
+        name: "{{ item.key }}"
+  loop: "{{ knative_components|dict2items }}"
+  ignore_errors: True
+
+- name: Find OLM Operator Pods
+  k8s_facts:
+    kind: Pod
+    field_selectors:
+      - metadata.name =  olm-operator
+  register: olm_pods
+
+- name :  Set OLM Namespace
+  set_fact:
+    olm_ns: "{{olm_pods.resources[0].metadata.namespace}}|unique"
+
+- name: Delete Catalog Sources
+  command: |
+     "oc  delete -n {{olm_ns}} -f {{item.value.catalog_src}} "
+  loop: "{{ knative_components|dict2items }}"
+
+# Leave this as the last task in the playbook.
+- name: remove_workload tasks complete
+  debug:
+    msg: "Remove Workload tasks completed successfully."
+  when: not silent|bool
